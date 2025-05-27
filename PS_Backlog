@@ -1,0 +1,198 @@
+SELECT *
+	, SUM(backlog) OVER (PARTITION BY center, task, ref_date) AS backlog_total
+FROM
+    (
+        (
+            SELECT
+                center,
+                'RECEIVE' AS task,
+                ref_date,
+                createdat_shift AS shift,
+                COUNT(
+                    DISTINCT if (
+                        createdat_workday = ref_date,
+                        problem_fullseq,
+                        NULL
+                    )
+                ) AS reported,
+                COUNT(
+                    DISTINCT if (
+                        createdat_workday = ref_date
+                        AND is_resolved = 1,
+                        problem_fullseq,
+                        NULL
+                    )
+                ) AS resolved,
+                COUNT(
+                    DISTINCT if (is_resolved = 0, problem_fullseq, NULL)
+                ) AS backlog
+            FROM
+                (
+                    SELECT
+                        status,
+                        if (status = 'REPORTED', 0, 1) AS is_resolved,
+                        center,
+                        createdat,
+                        if (
+                            HOUR (createdat) < 7,
+                            DATE (createdat) - INTERVAL '1' DAY,
+                            DATE (createdat)
+                        ) AS createdat_workday,
+                        if (
+                            HOUR (createdat) > 7
+                            AND HOUR (createdat) < 19,
+                            'DAY',
+                            'SWING'
+                        ) AS createdat_shift,
+                        updatedat,
+                        if (
+                            HOUR (updatedat) < 7,
+                            DATE (updatedat) - INTERVAL '1' DAY,
+                            DATE (updatedat)
+                        ) AS updatedat_workday,
+                        if (
+                            HOUR (updatedat) > 7
+                            AND HOUR (updatedat) < 19,
+                            'DAY',
+                            'SWING'
+                        ) AS updatedat_shift,
+                        problem_fullseq
+                    FROM
+                        (
+                            SELECT
+                                status,
+                                centerid AS center,
+                                date_parse (createdat, '%Y-%m-%dT%H:%i:%s.%f') AS createdat,
+                                date_parse (updatedat, '%Y-%m-%dT%H:%i:%s.%f') AS updatedat,
+                                ROW_NUMBER() OVER (
+                                    PARTITION BY
+                                        problemfullseq
+                                    ORDER BY
+                                        updatedat desc
+                                ) AS updatedat_orders,
+                                problemfullseq AS problem_fullseq
+                            FROM
+                                ssi_wmsinbound.o_wms_receive_problems
+                            WHERE
+                                airbyte_dt >= '20250101'
+                                AND centerid IN (136)
+                        )
+                    WHERE
+                        updatedat_orders = 1
+                ) AS base
+                LEFT JOIN (
+                    VALUES
+                        if (
+                            HOUR (now ()) < 7,
+                            DATE (now ()) - INTERVAL '1' DAY,
+                            DATE (now ())
+                        )
+                ) AS attr (ref_date) ON TRUE
+            GROUP BY
+                1,
+                2,
+                3,
+                4
+        )
+        UNION ALL
+        (
+            SELECT
+                center,
+                'STOW' AS task,
+                ref_date,
+                createdat_shift AS shift,
+                COUNT(
+                    DISTINCT if (
+                        createdat_workday = ref_date,
+                        problem_fullseq,
+                        NULL
+                    )
+                ) AS reported,
+                COUNT(
+                    DISTINCT if (
+                        createdat_workday = ref_date
+                        AND is_resolved = 1,
+                        problem_fullseq,
+                        NULL
+                    )
+                ) AS resolved,
+                COUNT(
+                    DISTINCT if (is_resolved = 0, problem_fullseq, NULL)
+                ) AS backlog
+            FROM
+                (
+                    SELECT
+                        status,
+                        if (
+                            status = 'REPORTED'
+                            OR status = 'TOTE_REPORTED',
+                            0,
+                            1
+                        ) AS is_resolved,
+                        center,
+                        createdat,
+                        if (
+                            HOUR (createdat) < 7,
+                            DATE (createdat) - INTERVAL '1' DAY,
+                            DATE (createdat)
+                        ) AS createdat_workday,
+                        if (
+                            HOUR (createdat) > 7
+                            AND HOUR (createdat) < 19,
+                            'DAY',
+                            'SWING'
+                        ) AS createdat_shift,
+                        updatedat,
+                        if (
+                            HOUR (updatedat) < 7,
+                            DATE (updatedat) - INTERVAL '1' DAY,
+                            DATE (updatedat)
+                        ) AS updatedat_workday,
+                        if (
+                            HOUR (updatedat) > 7
+                            AND HOUR (updatedat) < 19,
+                            'DAY',
+                            'SWING'
+                        ) AS updatedat_shift,
+                        problem_fullseq
+                    FROM
+                        (
+                            SELECT
+                                status,
+                                centerid AS center,
+                                date_parse (createdat, '%Y-%m-%dT%H:%i:%s.%f') AS createdat,
+                                date_parse (updatedat, '%Y-%m-%dT%H:%i:%s.%f') AS updatedat,
+                                ROW_NUMBER() OVER (
+                                    PARTITION BY
+                                        problemfullseq
+                                    ORDER BY
+                                        updatedat desc
+                                ) AS updatedat_orders,
+                                problemfullseq AS problem_fullseq
+                            FROM
+                                ssi_wmsinbound.o_wms_stow_problems
+                            WHERE
+                                airbyte_dt >= '20250101'
+                                AND centerid IN (136)
+                        )
+                    WHERE
+                        updatedat_orders = 1
+                ) AS base
+                LEFT JOIN (
+                    VALUES
+                        if (
+                            HOUR (now ()) < 7,
+                            DATE (now ()) - INTERVAL '1' DAY,
+                            DATE (now ())
+                        )
+                ) AS attr (ref_date) ON TRUE
+            GROUP BY
+                1,
+                2,                3,
+                4
+        )
+    )
+ORDER BY
+    1,
+    2,
+    4
