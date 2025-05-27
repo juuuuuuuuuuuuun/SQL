@@ -1,0 +1,546 @@
+WITH wsc AS (
+	SELECT id
+		, status
+	FROM ods.wib_stow_carts
+	WHERE centercode = 'KKW3'
+    -- AND status <> 'PENDING'
+    -- AND updatedat >= CURRENT_DATE - INTERVAL '1' MONTH
+),
+slg AS (
+	SELECT stowcartid
+		, skuid, quantity
+		, workeruserid
+		, eventtype
+		, createdat AS stowdat
+		, targetlotid
+	FROM ods.stow_logs
+),
+usr AS (
+	SELECT id
+		, userid
+	FROM ods.wms_users
+),
+sku AS (
+	SELECT id
+		, externalid AS skuseq
+		, name
+		, agent
+		, barcode
+	FROM ods.skus
+),
+skb AS (
+	SELECT sku.*
+	FROM sku
+),
+lot1 AS (
+	SELECT id
+		, fullname
+		, locationid
+		, binid
+	FROM ods.lots
+	WHERE centerid = 151
+),
+loc AS (
+	SELECT id
+		, TYPE
+		, floor
+		, ZONE
+		, aisle
+		, bay
+	FROM ods.locations
+	WHERE centerid = 151
+),
+bin AS (
+	SELECT id
+		, name
+		, volume
+		, maxskukinds
+		, TYPE
+		, alive
+	FROM ods.center_bins
+	WHERE centerid = 151
+),
+stw AS (
+	SELECT CASE
+			WHEN HOUR(slg.stowdat) < 7 THEN DATE(slg.stowdat) - INTERVAL '1' DAY
+			ELSE DATE(slg.stowdat)
+		  END AS stow_date
+		, CASE
+			WHEN HOUR(slg.stowdat) > 7 AND HOUR(slg.stowdat) < 19 THEN 'DAY'
+			ELSE 'SWING'
+		  END AS stow_shift
+		, CASE
+			WHEN HOUR(slg.stowdat) < 7 THEN HOUR(slg.stowdat) + 24
+			ELSE HOUR(slg.stowdat)
+		  END AS stow_hour
+		, wsc.status
+		, slg.stowcartid AS scid
+		, slg.skuid
+		, skb.skuseq
+		, skb.name
+		, skb.agent
+		, skb.barcode
+		, slg.quantity AS stow_unit
+		, slg.eventtype
+		, slg.stowdat AS sdt
+		, usr.userid
+		, lot1.fullname
+		, loc.TYPE
+		, loc.floor
+		, loc.ZONE
+		, loc.aisle
+		, bin.type AS bin_type
+	FROM wsc
+		INNER JOIN slg ON slg.stowcartid = wsc.id
+		LEFT JOIN usr ON usr.id = slg.workeruserid
+		LEFT JOIN skb ON skb.id = slg.skuid
+		LEFT JOIN lot1 ON lot1.id = slg.targetlotid
+		LEFT JOIN loc ON loc.id = lot1.locationid
+		LEFT JOIN bin ON bin.id = lot1.binid
+),
+rsw AS (
+	SELECT skuid
+		, unloadworkid
+		, receivingreportid AS rrpid
+		, receivestationplacementid AS rspid
+		, SUM(quantity) AS quantity
+	FROM ods.receive_station_work_logs
+	GROUP BY 1, 2, 3, 4
+),
+rsp AS (
+	SELECT id
+		, TYPE
+		, receivestationid
+		, receivefilterid AS rft
+		, createdat AS rdt
+		, stowcartid
+		, cartid
+	FROM ods.receive_station_placement
+	WHERE centercode = 'KKW3'
+	  AND stowcartid IS NOT NULL
+),
+rss AS (
+	SELECT id
+		, receivetype
+	FROM ods.receive_stations
+	WHERE centerid = 151
+),
+rrp AS (
+	SELECT id
+		, purchaseorderid AS po
+	FROM ods.receiving_reports
+),
+rft AS (
+	SELECT id
+		, name
+	FROM ods.wib_receive_filters
+	WHERE centercode = 'KKW3'
+	  AND name LIKE '%ATS%'
+),
+lot2 AS (
+	SELECT id
+		, fullname
+	FROM ods.lots
+	WHERE centerid = 151
+),
+rcv AS (
+	SELECT CASE
+			WHEN HOUR(rsp.rdt) < 7 THEN DATE(rsp.rdt) - INTERVAL '1' DAY
+			ELSE DATE(rsp.rdt)
+		  END AS rcv_date
+  		, CASE
+			WHEN HOUR(rsp.rdt) > 7 AND HOUR(rsp.rdt) < 19 THEN 'DAY'
+			ELSE 'SWING'
+		  END AS rcv_shift
+		, CASE
+			WHEN HOUR(rsp.rdt) < 7 THEN HOUR(rsp.rdt) + 24
+			ELSE HOUR(rsp.rdt)
+		  END AS rcv_hour
+		, rsw.unloadworkid
+		, lot2.fullname AS tote
+		, rsp.stowcartid
+		, rft.name AS rcvfilter
+		, ARRAY_AGG(rrp.po) AS po
+		, rsw.skuid AS skuid1
+		, rss.receivetype
+		, rsp.type AS worktype
+		, SUM(rsw.quantity) AS rcv_unit
+		, rsp.rdt
+	FROM rsw
+		INNER JOIN rsp ON rsp.id = rsw.rspid
+		LEFT JOIN rss ON rss.id = rsp.receivestationid
+		INNER JOIN rft ON rft.id = rsp.rft
+		LEFT JOIN rrp ON rrp.id = rsw.rrpid
+		LEFT JOIN lot2 ON lot2.id = rsp.cartid
+	WHERE rsw.quantity > 0
+	GROUP BY 1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 13
+),
+ulr AS (
+	SELECT unloadworksid
+		, MAX(transporttype) AS transporttype
+	FROM ods.unload_raw
+	WHERE centerid = 151
+	GROUP BY 1
+),
+ulw AS (
+	SELECT id
+		, invoicenumber
+		, createdat AS udt
+		, type
+	FROM ods.unload_works
+	WHERE centerid = 151
+),
+uld AS (
+	SELECT CASE
+			WHEN HOUR(ulw.udt) < 7 THEN DATE(ulw.udt) - INTERVAL '1' DAY
+			ELSE DATE(ulw.udt)
+		  END AS uld_date
+		, CASE
+			WHEN HOUR(ulw.udt) > 7 AND HOUR(ulw.udt) < 19 THEN 'DAY'
+			ELSE 'SWING'
+		  END AS uld_shift
+		, CASE
+			WHEN HOUR(ulw.udt) < 7 THEN HOUR(ulw.udt) + 24
+			ELSE HOUR(ulw.udt)
+		  END AS uld_hour
+		, ulr.unloadworksid AS ibc
+		, CASE
+			WHEN invoicenumber LIKE 'MRB%' THEN 'MILKRUN_PARCEL'
+			WHEN transporttype = 'MILKRUN' THEN 'MILKRUN'
+			WHEN transporttype IS NULL THEN ulw.TYPE
+			WHEN invoicenumber IS NULL THEN 'TRUCK'
+			ELSE 'PARCEL'
+		  END AS tptype
+		  , ulw.udt
+		  , ulw.type AS potype
+	FROM ulr
+		LEFT JOIN ulw ON ulw.id = ulr.unloadworksid
+)
+SELECT STOW_DATE
+	, STOW_SHIFT
+	, STOW_HOUR
+	, RCV_DATE
+	, RCV_SHIFT
+	, RCV_HOUR
+	, ULD_DATE
+	, ULD_SHIFT
+	, ULD_HOUR
+	, udt
+	, rdt
+	, CASE
+		WHEN DATE_FORMAT(rdt, '%H:%i:%s') BETWEEN '07:00:00' AND '23:59:59' THEN DATE_FORMAT(rdt, '%Y-%m-%d')
+		WHEN DATE_FORMAT(rdt, '%H:%i:%s') BETWEEN '00:00:00' AND '05:00:00' THEN DATE_FORMAT(rdt - INTERVAL '1' DAY, '%Y-%m-%d')
+		ELSE DATE_FORMAT(rdt, '%Y-%m-%d')
+	  END AS rdt2
+	, sdt
+	, status
+	, stowcartid
+	, skuid
+	, skuseq
+	, name
+	, agent
+	, barcode
+	, SUM(stow_unit) AS stow_unit
+	, fullname AS stow_loc
+	, type AS loc_type
+	, bin_type
+	, floor
+	, ZONE
+	, aisle
+	, ibc
+	, tote
+	, rcvfilter
+	, po
+	, receivetype
+	, worktype
+	, rcv_unit
+	, tptype
+FROM stw
+	INNER JOIN rcv ON rcv.stowcartid = stw.scid
+				AND rcv.skuid1 = stw.skuid
+	LEFT JOIN uld ON uld.ibc = rcv.unloadworkid
+WHERE rcv_date >= CURRENT_DATE - INTERVAL '7' DAY
+  AND rdt >= CURRENT_DATE - INTERVAL '7' DAY
+GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35
+
+
+
+-- missORsafe
+
+-- ATS
+
+WITH wsc AS (
+	SELECT id
+		, status
+	FROM ods.wib_stow_carts
+	WHERE centercode = 'KKW3'
+    -- AND status <> 'PENDING'
+    -- AND updatedat >= CURRENT_DATE - INTERVAL '1' MONTH
+),
+slg AS (
+	SELECT stowcartid
+		, skuid, quantity
+		, workeruserid
+		, eventtype
+		, createdat AS stowdat
+		, targetlotid
+	FROM ods.stow_logs
+),
+usr AS (
+	SELECT id
+		, userid
+	FROM ods.wms_users
+),
+sku AS (
+	SELECT id
+		, externalid AS skuseq
+		, name
+		, agent
+		, barcode
+	FROM ods.skus
+),
+skb AS (
+	SELECT sku.*
+	FROM sku
+),
+lot1 AS (
+	SELECT id
+		, fullname
+		, locationid
+		, binid
+	FROM ods.lots
+	WHERE centerid = 151
+),
+loc AS (
+	SELECT id
+		, TYPE
+		, floor
+		, ZONE
+		, aisle
+		, bay
+	FROM ods.locations
+	WHERE centerid = 151
+),
+bin AS (
+	SELECT id
+		, name
+		, volume
+		, maxskukinds
+		, TYPE
+		, alive
+	FROM ods.center_bins
+	WHERE centerid = 151
+),
+stw AS (
+	SELECT CASE
+			WHEN HOUR(slg.stowdat) < 7 THEN DATE(slg.stowdat) - INTERVAL '1' DAY
+			ELSE DATE(slg.stowdat)
+		  END AS stow_date
+		, CASE
+			WHEN HOUR(slg.stowdat) > 7 AND HOUR(slg.stowdat) < 19 THEN 'DAY'
+			ELSE 'SWING'
+		  END AS stow_shift
+		, CASE
+			WHEN HOUR(slg.stowdat) < 7 THEN HOUR(slg.stowdat) + 24
+			ELSE HOUR(slg.stowdat)
+		  END AS stow_hour
+		, wsc.status
+		, slg.stowcartid AS scid
+		, slg.skuid
+		, skb.skuseq
+		, skb.name
+		, skb.agent
+		, skb.barcode
+		, slg.quantity AS stow_unit
+		, slg.eventtype
+		, slg.stowdat AS sdt
+		, usr.userid
+		, lot1.fullname
+		, loc.TYPE
+		, loc.floor
+		, loc.ZONE
+		, loc.aisle
+		, bin.type AS bin_type
+	FROM wsc
+		INNER JOIN slg ON slg.stowcartid = wsc.id
+		LEFT JOIN usr ON usr.id = slg.workeruserid
+		LEFT JOIN skb ON skb.id = slg.skuid
+		LEFT JOIN lot1 ON lot1.id = slg.targetlotid
+		LEFT JOIN loc ON loc.id = lot1.locationid
+		LEFT JOIN bin ON bin.id = lot1.binid
+),
+rsw AS (
+	SELECT skuid
+		, unloadworkid
+		, receivingreportid AS rrpid
+		, receivestationplacementid AS rspid
+		, SUM(quantity) AS quantity
+	FROM ods.receive_station_work_logs
+	GROUP BY 1, 2, 3, 4
+),
+rsp AS (
+	SELECT id
+		, TYPE
+		, receivestationid
+		, receivefilterid AS rft
+		, createdat AS rdt
+		, stowcartid
+		, cartid
+	FROM ods.receive_station_placement
+	WHERE centercode = 'KKW3'
+	  AND stowcartid IS NOT NULL
+),
+rss AS (
+	SELECT id
+		, receivetype
+	FROM ods.receive_stations
+	WHERE centerid = 151
+),
+rrp AS (
+	SELECT id
+		, purchaseorderid AS po
+	FROM ods.receiving_reports
+),
+rft AS (
+	SELECT id
+		, name
+	FROM ods.wib_receive_filters
+	WHERE centercode = 'KKW3'
+	  AND name LIKE '%ATS%'
+),
+lot2 AS (
+	SELECT id
+		, fullname
+	FROM ods.lots
+	WHERE centerid = 151
+),
+rcv AS (
+	SELECT CASE
+			WHEN HOUR(rsp.rdt) < 7 THEN DATE(rsp.rdt) - INTERVAL '1' DAY
+			ELSE DATE(rsp.rdt)
+		  END AS rcv_date
+  		, CASE
+			WHEN HOUR(rsp.rdt) > 7 AND HOUR(rsp.rdt) < 19 THEN 'DAY'
+			ELSE 'SWING'
+		  END AS rcv_shift
+		, CASE
+			WHEN HOUR(rsp.rdt) < 7 THEN HOUR(rsp.rdt) + 24
+			ELSE HOUR(rsp.rdt)
+		  END AS rcv_hour
+		, rsw.unloadworkid
+		, lot2.fullname AS tote
+		, rsp.stowcartid
+		, rft.name AS rcvfilter
+		, ARRAY_AGG(rrp.po) AS po
+		, rsw.skuid AS skuid1
+		, rss.receivetype
+		, rsp.type AS worktype
+		, SUM(rsw.quantity) AS rcv_unit
+		, rsp.rdt
+	FROM rsw
+		INNER JOIN rsp ON rsp.id = rsw.rspid
+		LEFT JOIN rss ON rss.id = rsp.receivestationid
+		INNER JOIN rft ON rft.id = rsp.rft
+		LEFT JOIN rrp ON rrp.id = rsw.rrpid
+		LEFT JOIN lot2 ON lot2.id = rsp.cartid
+	WHERE rsw.quantity > 0
+	GROUP BY 1, 2, 3, 4, 5, 6, 7, 9, 10, 11, 13
+),
+ulr AS (
+	SELECT unloadworksid
+		, MAX(transporttype) AS transporttype
+	FROM ods.unload_raw
+	WHERE centerid = 151
+	GROUP BY 1
+),
+ulw AS (
+	SELECT id
+		, invoicenumber
+		, createdat AS udt
+		, type
+	FROM ods.unload_works
+	WHERE centerid = 151
+),
+uld AS (
+	SELECT CASE
+			WHEN HOUR(ulw.udt) < 7 THEN DATE(ulw.udt) - INTERVAL '1' DAY
+			ELSE DATE(ulw.udt)
+		  END AS uld_date
+		, CASE
+			WHEN HOUR(ulw.udt) > 7 AND HOUR(ulw.udt) < 19 THEN 'DAY'
+			ELSE 'SWING'
+		  END AS uld_shift
+		, CASE
+			WHEN HOUR(ulw.udt) < 7 THEN HOUR(ulw.udt) + 24
+			ELSE HOUR(ulw.udt)
+		  END AS uld_hour
+		, ulr.unloadworksid AS ibc
+		, CASE
+			WHEN invoicenumber LIKE 'MRB%' THEN 'MILKRUN_PARCEL'
+			WHEN transporttype = 'MILKRUN' THEN 'MILKRUN'
+			WHEN transporttype IS NULL THEN ulw.TYPE
+			WHEN invoicenumber IS NULL THEN 'TRUCK'
+			ELSE 'PARCEL'
+		  END AS tptype
+		  , ulw.udt
+		  , ulw.type AS potype
+	FROM ulr
+		LEFT JOIN ulw ON ulw.id = ulr.unloadworksid
+),
+sla AS (
+SELECT STOW_DATE
+	, STOW_SHIFT
+	, STOW_HOUR
+	, RCV_DATE
+	, RCV_SHIFT
+	, RCV_HOUR
+	, ULD_DATE
+	, ULD_SHIFT
+	, ULD_HOUR
+	, udt
+	, rdt
+	, CASE
+		WHEN DATE_FORMAT(rdt, '%H:%i:%s') BETWEEN '07:00:00' AND '23:59:59' THEN DATE_FORMAT(rdt, '%Y-%m-%d')
+		WHEN DATE_FORMAT(rdt, '%H:%i:%s') BETWEEN '00:00:00' AND '05:00:00' THEN DATE_FORMAT(rdt - INTERVAL '1' DAY, '%Y-%m-%d')
+		ELSE DATE_FORMAT(rdt, '%Y-%m-%d')
+	  END AS rdt2
+	, sdt
+	, status
+	, stowcartid
+	, skuid
+	, skuseq
+	, name
+	, agent
+	, barcode
+	, SUM(stow_unit) AS stow_unit
+	, fullname AS stow_loc
+	, type AS loc_type
+	, bin_type
+	, floor
+	, ZONE
+	, aisle
+	, ibc
+	, tote
+	, rcvfilter
+	, po
+	, receivetype
+	, worktype
+	, rcv_unit
+	, tptype
+FROM stw
+	INNER JOIN rcv ON rcv.stowcartid = stw.scid
+				AND rcv.skuid1 = stw.skuid
+	LEFT JOIN uld ON uld.ibc = rcv.unloadworkid
+WHERE rcv_date >= CURRENT_DATE - INTERVAL '7' DAY
+  AND rdt >= CURRENT_DATE - INTERVAL '7' DAY
+GROUP BY 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35
+)
+SELECT *
+	, DATE_DIFF('second', udt, sdt) / 3600.0 AS U2S
+	, DATE_DIFF('second', udt, rdt) / 3600.0 AS U2R
+	, DATE_DIFF('second', rdt, sdt) / 3600.0 AS R2S
+	, CASE
+		WHEN (DATE_DIFF('second', rdt, sdt) / 3600.0) > 2 THEN 'MISS'
+		ELSE 'SAFE'
+	  END AS isMiss
+FROM sla
